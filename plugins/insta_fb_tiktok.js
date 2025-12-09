@@ -1,55 +1,73 @@
 const axios = require("axios");
-const { command, getBuffer, getJson } = require("../lib");
-const { fromBuffer } = require("file-type");
+const { command, getJson } = require("../lib");
 
 const instagramRegex = /(?:https?:\/\/)?(?:www\.)?instagram\.com\/[^\s]+/;
-const facebookRegex  = /(?:https?:\/\/)?(?:www\.)?facebook\.com\/[^\s]+/;
-const tiktokRegex    = /(?:https?:\/\/)?(?:www\.)?tiktok\.com\/[^\s]+/;
+const facebookRegex = /(?:https?:\/\/)?(?:www\.)?facebook\.com\/[^\s]+/;
+const tiktokRegex = /(?:https?:\/\/)?(?:www\.)?tiktok\.com\/[^\s]+/;
 
-command({ on: "text", fromMe: true }, async (message, match, m) => {
-  if (!instagramRegex.test(match) && !facebookRegex.test(match) && !tiktokRegex.test(match)) return;
+command({
+  pattern: "socials",
+  on: "text",
+  fromMe: false,
+  desc: "TT/FB/Insta",
+  type: "auto"
+}, async (message, match, m) => {
+  if (
+    !instagramRegex.test(match) &&
+    !facebookRegex.test(match) &&
+    !tiktokRegex.test(match)
+  ) return;
 
   try {
     if (instagramRegex.test(match)) {
-      let response = await getJson(`https://api.vreden.my.id/api/igdownload?url=${match}`);
-      if (response.status !== 200) return;
-      let data = response.result.response.data;
-      
-      for (const { type, url } of data) {
-        let buffer = await getBuffer(url);
-        if (type === "image") {
+      let  data  = await getJson(
+        `https://api-ij32.onrender.com/igdl?url=${match}`
+      );
+      for (const { link, contentType } of data) {
+        const response = await axios.get(link, { responseType: "stream" });
+        if (contentType === "image/jpeg") {
           await message.client.sendMessage(
             message.jid,
-            { image: buffer, caption: "*Instagram image*" },
+            { image: { stream: response.data }, caption: "*Instagram image*" },
             { quoted: m }
           );
         } else {
           await message.client.sendMessage(
             message.jid,
-            { video: buffer, mimetype: "video/mp4" },
+            { video: { stream: response.data }, mimetype: "video/mp4" },
             { quoted: m }
           );
         }
       }
     } else if (facebookRegex.test(match)) {
-      let { data } = await axios.get(`https://tshepang-yasuke-martin.hf.space/fb?url=${match}`);
+      let { data } = await axios.get(
+        `https://api-ij32.onrender.com/fb?url=${match}`
+      );
       let videoUrl = data.data["720p (HD)"] || data.data["360p (SD)"];
       if (!videoUrl) return;
-      
-      let buffer = await getBuffer(videoUrl);
+      const response = await axios.get(videoUrl, { responseType: "stream" });
       await message.client.sendMessage(
         message.jid,
-        { video: buffer, mimetype: "video/mp4" },
+        { video: { stream: response.data }, mimetype: "video/mp4" },
         { quoted: m }
       );
-    } else{
-let { data } = await axios.get(`https://api.vreden.my.id/api/tiktok?url=${match}`);
-let vx = data.result.data;
-let filter =  vx.filter(v => v.type == "nowatermark");
-let buffer = await getBuffer(filter[0].url);
-return message.client.sendMessage(message.jid, { video: buffer , caption: data.result.title }, { quoted: m });
-   }
+    } else {
+      if (match == "https://www.tiktok.com/tiktoklite")
+        return message.reply("You tweaking twin, that's an app url");
+        let { data } = await axios.get(
+        `https://api-ij32.onrender.com/tiktok?url=${match}`
+      );
+      if(!data.video) return;
+      
+      const response = await axios.get(data.video, { responseType: "stream" });
+      await message.client.sendMessage(
+        message.jid,
+        { video: { stream: response.data }, mimetype: "video/mp4" },
+        { quoted: m }
+      );
+      
+    }
   } catch (error) {
     console.log("Error processing request:", error);
-  }
+     }
 });
