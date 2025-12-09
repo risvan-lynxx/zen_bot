@@ -1,24 +1,30 @@
-const { default: makeWASocket, useMultiFileAuthState, Browsers, makeInMemoryStore, delay, makeCacheableSignalKeyStore, DisconnectReason } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require("baileys");
 const path = require("path");
 const fs = require("fs");
-const config = require("./config");
 const pino = require("pino");
+const logger = pino({ level: "silent" });
+const { MakeSession } = require("./lib/session");
 const { Message } = require("./lib/Messages");
 const { serialize, parsedJid } = require("./lib");
 const events = require("./lib/events");
 const express = require("express");
 const app = express();
-const port = config.PORT;
-
+const port = global.config.PORT;
+const NodeCache = require('node-cache');
 const EV = require("events");
 EV.setMaxListeners(0);
 
-const store = makeInMemoryStore({ logger: pino().child({ level: "silent", stream: "store" }) });
-const logger = pino({ level: "silent" });
-const { MakeSession } = require("./lib/session");
+const delay = async (ms) => {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+global.cache = {
+	groups: new NodeCache({ stdTTL: 400, checkperiod: 320, useClones: false }), /*stdTTL == Standard Time-To-Live , the rest should make sense homieðŸ¦¦*/
+	messages: new NodeCache({ stdTTL: 60, checkperiod: 80, useClones: false }),
+};
 
 if (!fs.existsSync("./resources/auth/creds.json")) {
-    MakeSession(config.SESSION_ID, "./resources/auth/creds.json").then(() =>
+    MakeSession(global.config.SESSION_ID, "./resources/auth/creds.json").then(() =>
         console.log("version : " + require("./package.json").version)
     );
 }
@@ -48,32 +54,30 @@ const p = async () => {
 async function Iris() {
     try {
         console.log(`Syncing database`);
-        await config.DATABASE.sync();
-
         const { state, saveCreds } = await useMultiFileAuthState(`./resources/auth/`);
-
+        /*let { version } = await fetchLatestBaileysVersion();*/
         let conn = makeWASocket({
-            auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-            printQRInTerminal: false,
+            auth: state,
+			printQRInTerminal: false,
             logger: pino({ level: "silent" }),
-            browser: Browsers.macOS('Desktop'),
-            downloadHistory: false,
-            syncFullHistory: false,
-            markOnlineOnConnect: false,
-            getMessage: false,
-            emitOwnEvents: false,
-            generateHighQualityLinkPreview: true,
             defaultQueryTimeoutMs: undefined,
+            cachedGroupMetadata: async (jid) => {
+            const cachedData = global.cache.groups.get(jid);
+            if (cachedData) return cachedData;
+            const metadata = await conn.groupMetadata(jid);
+            global.cache.groups.set(jid, metadata);
+            return metadata;
+            }
         });
 
         conn.ev.on("call", async (c) => {
             try {
-                if (config.CALL_REJECT === true) {
+                if (global.config.CALL_REJECT === true) {
                     c = c.map((c) => c)[0];
                     let { status, from, id } = c;
                     if (status == "offer") {
                         await conn.rejectCall(id, from);
-                        return conn.sendMessage(from, { text: "_NUMBER UNDER ARTIFICIAL INTELLIGENCE, NO 📞_" });
+                        return conn.sendMessage(from, { text: "_NUMBER UNDER ARTIFICIAL INTELLIGENCE, NO ðŸ“ž_" });
                     }
                 }
             } catch (error) {
@@ -107,6 +111,31 @@ async function Iris() {
         });
 
         conn.ev.on("creds.update", saveCreds);
+        
+    conn.ev.on("groups.update", async (events) => {
+    for (const event of events) {
+        try {
+            const metadata = await conn.groupMetadata(event.id);
+            global.cache.groups.set(event.id, metadata);
+        } catch (err) {
+            console.error(`Failed to get group metadata for ${event.id}:`, err.message);
+            global.cache.groups.del(event.id); // Optional: clean it from cache
+        }
+    }
+});
+
+   conn.ev.on("group-participants.update", async (event) => {
+    try {
+        const metadata = await conn.groupMetadata(event.id);
+        global.cache.groups.set(event.id, metadata);
+    } catch (err) {
+        console.error(`Failed to get group metadata for ${event.id}:`, err.message);
+        global.cache.groups.del(event.id);
+    }
+});
+
+
+
 
         conn.ev.on("messages.upsert", async (m) => {
             try {
@@ -116,7 +145,7 @@ async function Iris() {
                 if (!msg) return;
 
                 let text_msg = msg.body;
-                if (text_msg && config.LOGS) {
+                if (text_msg && global.config.LOGS) {
                     console.log(
                         `At : ${msg.from.endsWith("@g.us") ? (await conn.groupMetadata(msg.from)).subject : msg.from}\nFrom : ${msg.sender}\nMessage:${text_msg}\nSudo:${msg.sudo}`
                     );
@@ -125,7 +154,7 @@ async function Iris() {
                 events.commands.map(async (command) => {
                     if (command.fromMe && !msg.sudo) return;
 
-                    let prefix = config.HANDLERS.trim();
+                    let prefix = global.config.HANDLERS.trim();
                     let comman = text_msg;
 
                     if (command?.pattern instanceof RegExp && typeof comman === "string") {
@@ -141,7 +170,7 @@ async function Iris() {
                     msg.prefix = prefix;
 
                     try {
-                        if (config.ALWAYS_ONLINE === true) {
+                        if (global.config.ALWAYS_ONLINE === true) {
                             conn.sendPresenceUpdate("available", msg.key.remoteJid);
                         } else {
                             conn.sendPresenceUpdate("unavailable", msg.key.remoteJid);
